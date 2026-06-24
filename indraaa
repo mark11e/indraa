@@ -1,0 +1,129 @@
+wait(0.2)
+local Players = game:GetService("Players")
+
+local LocalPlayer = Players.LocalPlayer
+
+-- Price thresholds per pet type
+local MaxPrice = {
+    Bear = 5000000,
+    DragonFly = 9000000,
+    Unicorn = 12000000,
+    Raccoon = 15000000,
+}
+
+-- Wanted pet types
+local WantedPets = {
+    Unicorn = true,
+    DragonFly = true,
+    Raccoon = true,
+    Bear = true,
+}
+
+-- Parse a price text like "$1,200,000" into a number
+local function parsePrice(text)
+    return tonumber((text:gsub("[^%d]", ""))) or math.huge
+end
+
+-- Track what we're currently walking to
+local currentTarget = nil -- { refPart = ..., prompt = ..., petType = ..., uuid = ... }
+
+-- Main loop
+while task.wait(0.5) do
+    -- Get character and root part
+    local character = LocalPlayer.Character
+    local hrp = character and character:FindFirstChild("HumanoidRootPart")
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+
+    if not hrp or not humanoid then
+        currentTarget = nil
+        continue
+    end
+
+    -- If we have a current target, check if we're close enough to buy
+    if currentTarget then
+        local distance = (hrp.Position - currentTarget.refPart.Position).Magnitude
+        print(string.format("Walking to %s - distance: %.1f", currentTarget.petType, distance))
+
+        if distance < 8 then
+            -- We're close enough, buy it
+            if currentTarget.prompt.HoldDuration > 0 then
+                fireproximityprompt(currentTarget.prompt, currentTarget.prompt.HoldDuration)
+            else
+                fireproximityprompt(currentTarget.prompt)
+            end
+            print(string.format("Bought %s (UUID: %s)", currentTarget.petType, currentTarget.uuid))
+            currentTarget = nil
+            humanoid:MoveTo(hrp.Position) -- Stop moving
+        else
+            -- Keep walking toward the target
+            humanoid:MoveTo(currentTarget.refPart.Position + Vector3.new(0, 3, 0))
+        end
+
+        continue -- Skip the scanning logic, we're busy with this target
+    end
+
+    -- No current target, scan for a new pet to buy
+    for _, model in ipairs(workspace.Map.WildPetSpawns:GetChildren()) do
+        -- Extract pet type from model name
+        local petType = model.Name:match("WildPet_(.-)_WildPet_")
+        if not petType or not WantedPets[petType] then
+            continue
+        end
+
+        -- Extract UUID from model name
+        local uuid = model.Name:match("WildPet_.-_WildPet_(.+)$")
+        if not uuid then
+            continue
+        end
+
+        -- Find the matching reference part
+        local refPart = workspace.Map.WildPetRef:FindFirstChild("WildPet_" .. uuid)
+        if not refPart then
+            continue
+        end
+
+        -- Read the current price
+        local priceLabel = model.RootPart.PetCostTimer.TextLabel
+        if not priceLabel then
+            continue
+        end
+
+        local currentPrice = parsePrice(priceLabel.Text)
+
+        -- Check if price is within our budget for this pet type
+        if currentPrice > MaxPrice[petType] then
+            continue
+        end
+
+        -- Find the proximity prompt
+        local prompt = model:FindFirstChild("BuyPrompt", true)
+        if not prompt then
+            continue
+        end
+
+        -- Check if we're already right next to it
+        local distance = (hrp.Position - refPart.Position).Magnitude
+        if distance < 8 then
+            -- Buy immediately
+            if prompt.HoldDuration > 0 then
+                fireproximityprompt(prompt, prompt.HoldDuration)
+            else
+                fireproximityprompt(prompt)
+            end
+            print(string.format("Bought %s (UUID: %s) for %s (already nearby)", petType, uuid, priceLabel.Text))
+        else
+            -- Start walking to it
+            print(string.format("Walking to %s (UUID: %s) - distance: %.1f", petType, uuid, distance))
+            humanoid:MoveTo(refPart.Position + Vector3.new(0, 3, 0))
+            currentTarget = {
+                refPart = refPart,
+                prompt = prompt,
+                petType = petType,
+                uuid = uuid,
+            }
+        end
+
+        -- Only target one pet at a time
+        break
+    end
+end
