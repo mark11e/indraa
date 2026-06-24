@@ -1,8 +1,16 @@
-wait(5)
 local Players = game:GetService("Players")
+
+repeat task.wait() until game:IsLoaded()
+
+local Map = workspace:WaitForChild("Map")
+local WildPetSpawns = Map:WaitForChild("WildPetSpawns")
+local WildPetRef = Map:WaitForChild("WildPetRef")
 
 local LocalPlayer = Players.LocalPlayer
 
+local function getCharacter()
+    return LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+end
 -- Price thresholds per pet type
 local MaxPrice = {
     Bear = 5000000,
@@ -30,7 +38,7 @@ local currentTarget = nil -- { refPart = ..., prompt = ..., petType = ..., uuid 
 -- Main loop
 while task.wait(0.5) do
     -- Get character and root part
-    local character = LocalPlayer.Character
+   local character = getCharacter()
     local hrp = character and character:FindFirstChild("HumanoidRootPart")
     local humanoid = character and character:FindFirstChildOfClass("Humanoid")
 
@@ -63,7 +71,7 @@ while task.wait(0.5) do
     end
 
     -- No current target, scan for a new pet to buy
-    for _, model in ipairs(workspace.Map.WildPetSpawns:GetChildren()) do
+    for _, model in ipairs(WildPetSpawns:GetChildren()) do
         -- Extract pet type from model name
         local petType = model.Name:match("WildPet_(.-)_WildPet_")
         if not petType or not WantedPets[petType] then
@@ -77,7 +85,7 @@ while task.wait(0.5) do
         end
 
         -- Find the matching reference part
-        local refPart = workspace.Map.WildPetRef:FindFirstChild("WildPet_" .. uuid)
+        local refPart = WildPetRef:FindFirstChild("WildPet_" .. uuid)
         if not refPart then
             continue
         end
