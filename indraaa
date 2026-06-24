@@ -27,6 +27,7 @@ local WantedPets = {
     Bear = true,
 }
 
+local PurchasedPets = {}
 -- Parse a price text like "$1,200,000" into a number
 local function parsePrice(text)
     return tonumber((text:gsub("[^%d]", ""))) or math.huge
@@ -59,6 +60,7 @@ while task.wait(0.5) do
             else
                 fireproximityprompt(currentTarget.prompt)
             end
+	    PurchasedPets[currentTarget.uuid] = true
             print(string.format("Bought %s (UUID: %s)", currentTarget.petType, currentTarget.uuid))
             currentTarget = nil
             humanoid:MoveTo(hrp.Position) -- Stop moving
@@ -83,6 +85,9 @@ while task.wait(0.5) do
         if not uuid then
             continue
         end
+	if PurchasedPets[uuid] then
+   		continue
+	end
 
         -- Find the matching reference part
         local refPart = WildPetRef:FindFirstChild("WildPet_" .. uuid)
@@ -111,14 +116,16 @@ while task.wait(0.5) do
 
         -- Check if we're already right next to it
         local distance = (hrp.Position - refPart.Position).Magnitude
-        if distance < 8 then
-            -- Buy immediately
-            if prompt.HoldDuration > 0 then
-                fireproximityprompt(prompt, prompt.HoldDuration)
-            else
-                fireproximityprompt(prompt)
-            end
-            print(string.format("Bought %s (UUID: %s) for %s (already nearby)", petType, uuid, priceLabel.Text))
+	if distance < 8 then
+    		if prompt.HoldDuration > 0 then
+        		fireproximityprompt(prompt, prompt.HoldDuration)
+    		else
+       		 	fireproximityprompt(prompt)
+    		end
+
+    		PurchasedPets[uuid] = true
+
+    		print(string.format("Bought %s (UUID: %s) for %s (already nearby)", petType, uuid, priceLabel.Text))
         else
             -- Start walking to it
             print(string.format("Walking to %s (UUID: %s) - distance: %.1f", petType, uuid, distance))
