@@ -1,17 +1,17 @@
 local Players = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
 
+-- Start as early as possible
 repeat task.wait() until game:IsLoaded()
-
-local Map = workspace:WaitForChild("Map")
-local WildPetSpawns = Map:WaitForChild("WildPetSpawns")
-local WildPetRef = Map:WaitForChild("WildPetRef")
 
 local LocalPlayer = Players.LocalPlayer
 
-local function getCharacter()
-    return LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
-end
--- Price thresholds per pet type
+-- Initialize map and pet data FIRST (no character dependency)
+local Map = Workspace:WaitForChild("Map", 30)  -- generous timeout
+local WildPetSpawns = Map:WaitForChild("WildPetSpawns")
+local WildPetRef = Map:WaitForChild("WildPetRef")
+
+-- Price thresholds and wanted pets
 local MaxPrice = {
     Bear = 5000000,
     DragonFly = 9000000,
@@ -19,7 +19,6 @@ local MaxPrice = {
     Raccoon = 15000000,
 }
 
--- Wanted pet types
 local WantedPets = {
     Unicorn = true,
     DragonFly = true,
@@ -28,108 +27,102 @@ local WantedPets = {
 }
 
 local PurchasedPets = {}
--- Parse a price text like "$1,200,000" into a number
+
 local function parsePrice(text)
     return tonumber((text:gsub("[^%d]", ""))) or math.huge
 end
 
--- Track what we're currently walking to
-local currentTarget = nil -- { refPart = ..., prompt = ..., petType = ..., uuid = ... }
+-- Track current target
+local currentTarget = nil
+
+local function getCharacter()
+    return LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+end
+
+local function getHRPAndHumanoid()
+    local character = getCharacter()
+    local hrp = character:WaitForChild("HumanoidRootPart", 5)
+    local humanoid = character:WaitForChild("Humanoid", 5)
+    return character, hrp, humanoid
+end
 
 -- Main loop
-while task.wait(0.5) do
-    -- Get character and root part
-   local character = getCharacter()
-    local hrp = character and character:FindFirstChild("HumanoidRootPart")
-    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
-
+while task.wait(0.3) do  -- slightly faster scan
+    local character, hrp, humanoid = getHRPAndHumanoid()
+    
     if not hrp or not humanoid then
         currentTarget = nil
         continue
     end
 
-    -- If we have a current target, check if we're close enough to buy
+    -- === HANDLE CURRENT TARGET ===
     if currentTarget then
         local distance = (hrp.Position - currentTarget.refPart.Position).Magnitude
         print(string.format("Walking to %s - distance: %.1f", currentTarget.petType, distance))
 
         if distance < 8 then
-            -- We're close enough, buy it
-            if currentTarget.prompt.HoldDuration > 0 then
-                fireproximityprompt(currentTarget.prompt, currentTarget.prompt.HoldDuration)
+            -- Buy it
+            local prompt = currentTarget.prompt
+            if prompt.HoldDuration > 0 then
+                fireproximityprompt(prompt, prompt.HoldDuration)
             else
-                fireproximityprompt(currentTarget.prompt)
+                fireproximityprompt(prompt)
             end
-	    PurchasedPets[currentTarget.uuid] = true
+
+            PurchasedPets[currentTarget.uuid] = true
             print(string.format("Bought %s (UUID: %s)", currentTarget.petType, currentTarget.uuid))
+            
             currentTarget = nil
-            humanoid:MoveTo(hrp.Position) -- Stop moving
+            humanoid:MoveTo(hrp.Position) -- stop moving
         else
-            -- Keep walking toward the target
+            -- Keep walking
             humanoid:MoveTo(currentTarget.refPart.Position + Vector3.new(0, 3, 0))
         end
-
-        continue -- Skip the scanning logic, we're busy with this target
+        continue
     end
 
-    -- No current target, scan for a new pet to buy
+    -- === SCAN FOR NEW PETS ===
     for _, model in ipairs(WildPetSpawns:GetChildren()) do
-        -- Extract pet type from model name
         local petType = model.Name:match("WildPet_(.-)_WildPet_")
         if not petType or not WantedPets[petType] then
             continue
         end
 
-        -- Extract UUID from model name
         local uuid = model.Name:match("WildPet_.-_WildPet_(.+)$")
-        if not uuid then
+        if not uuid or PurchasedPets[uuid] then
             continue
         end
-	if PurchasedPets[uuid] then
-   		continue
-	end
 
-        -- Find the matching reference part
         local refPart = WildPetRef:FindFirstChild("WildPet_" .. uuid)
-        if not refPart then
-            continue
-        end
+        if not refPart then continue end
 
-        -- Read the current price
-        local priceLabel = model.RootPart.PetCostTimer.TextLabel
-        if not priceLabel then
-            continue
-        end
+        local priceLabel = model:FindFirstChild("RootPart", true)?.PetCostTimer?.TextLabel
+        if not priceLabel then continue end
 
         local currentPrice = parsePrice(priceLabel.Text)
-
-        -- Check if price is within our budget for this pet type
         if currentPrice > MaxPrice[petType] then
             continue
         end
 
-        -- Find the proximity prompt
         local prompt = model:FindFirstChild("BuyPrompt", true)
-        if not prompt then
-            continue
-        end
+        if not prompt then continue end
 
-        -- Check if we're already right next to it
         local distance = (hrp.Position - refPart.Position).Magnitude
-	if distance < 8 then
-    		if prompt.HoldDuration > 0 then
-        		fireproximityprompt(prompt, prompt.HoldDuration)
-    		else
-       		 	fireproximityprompt(prompt)
-    		end
 
-    		PurchasedPets[uuid] = true
-
-    		print(string.format("Bought %s (UUID: %s) for %s (already nearby)", petType, uuid, priceLabel.Text))
+        if distance < 8 then
+            -- Already close
+            if prompt.HoldDuration > 0 then
+                fireproximityprompt(prompt, prompt.HoldDuration)
+            else
+                fireproximityprompt(prompt)
+            end
+            PurchasedPets[uuid] = true
+            print(string.format("Bought %s (UUID: %s) for %s (already nearby)", petType, uuid, priceLabel.Text))
         else
             -- Start walking to it
             print(string.format("Walking to %s (UUID: %s) - distance: %.1f", petType, uuid, distance))
             humanoid:MoveTo(refPart.Position + Vector3.new(0, 3, 0))
+            
             currentTarget = {
                 refPart = refPart,
                 prompt = prompt,
@@ -138,7 +131,6 @@ while task.wait(0.5) do
             }
         end
 
-        -- Only target one pet at a time
-        break
+        break  -- only target one at a time
     end
 end
