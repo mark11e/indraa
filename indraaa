@@ -1,17 +1,9 @@
 local Players = game:GetService("Players")
-
-repeat task.wait() until game:IsLoaded()
-
-local Map = workspace:WaitForChild("Map")
-local WildPetSpawns = Map:WaitForChild("WildPetSpawns")
-local WildPetRef = Map:WaitForChild("WildPetRef")
-
 local LocalPlayer = Players.LocalPlayer
 
-local function getCharacter()
-    return LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
-end
--- Price thresholds per pet type
+-- ==========================================
+-- CONFIGURATION
+-- ==========================================
 local MaxPrice = {
     Bear = 5000000,
     DragonFly = 9000000,
@@ -19,7 +11,6 @@ local MaxPrice = {
     Raccoon = 15000000,
 }
 
--- Wanted pet types
 local WantedPets = {
     Unicorn = true,
     DragonFly = true,
@@ -27,118 +18,255 @@ local WantedPets = {
     Bear = true,
 }
 
-local PurchasedPets = {}
--- Parse a price text like "$1,200,000" into a number
+-- ==========================================
+-- UTILITY
+-- ==========================================
 local function parsePrice(text)
     return tonumber((text:gsub("[^%d]", ""))) or math.huge
 end
 
--- Track what we're currently walking to
-local currentTarget = nil -- { refPart = ..., prompt = ..., petType = ..., uuid = ... }
-
--- Main loop
-while task.wait(0.5) do
-    -- Get character and root part
-   local character = getCharacter()
-    local hrp = character and character:FindFirstChild("HumanoidRootPart")
-    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
-
-    if not hrp or not humanoid then
-        currentTarget = nil
-        continue
-    end
-
-    -- If we have a current target, check if we're close enough to buy
-    if currentTarget then
-        local distance = (hrp.Position - currentTarget.refPart.Position).Magnitude
-        print(string.format("Walking to %s - distance: %.1f", currentTarget.petType, distance))
-
-        if distance < 8 then
-            -- We're close enough, buy it
-            if currentTarget.prompt.HoldDuration > 0 then
-                fireproximityprompt(currentTarget.prompt, currentTarget.prompt.HoldDuration)
-            else
-                fireproximityprompt(currentTarget.prompt)
-            end
-	    PurchasedPets[currentTarget.uuid] = true
-            print(string.format("Bought %s (UUID: %s)", currentTarget.petType, currentTarget.uuid))
-            currentTarget = nil
-            humanoid:MoveTo(hrp.Position) -- Stop moving
-        else
-            -- Keep walking toward the target
-            humanoid:MoveTo(currentTarget.refPart.Position + Vector3.new(0, 3, 0))
-        end
-
-        continue -- Skip the scanning logic, we're busy with this target
-    end
-
-    -- No current target, scan for a new pet to buy
-    for _, model in ipairs(WildPetSpawns:GetChildren()) do
-        -- Extract pet type from model name
-        local petType = model.Name:match("WildPet_(.-)_WildPet_")
-        if not petType or not WantedPets[petType] then
-            continue
-        end
-
-        -- Extract UUID from model name
-        local uuid = model.Name:match("WildPet_.-_WildPet_(.+)$")
-        if not uuid then
-            continue
-        end
-	if PurchasedPets[uuid] then
-   		continue
-	end
-
-        -- Find the matching reference part
-        local refPart = WildPetRef:FindFirstChild("WildPet_" .. uuid)
-        if not refPart then
-            continue
-        end
-
-        -- Read the current price
-        local priceLabel = model.RootPart.PetCostTimer.TextLabel
-        if not priceLabel then
-            continue
-        end
-
-        local currentPrice = parsePrice(priceLabel.Text)
-
-        -- Check if price is within our budget for this pet type
-        if currentPrice > MaxPrice[petType] then
-            continue
-        end
-
-        -- Find the proximity prompt
-        local prompt = model:FindFirstChild("BuyPrompt", true)
-        if not prompt then
-            continue
-        end
-
-        -- Check if we're already right next to it
-        local distance = (hrp.Position - refPart.Position).Magnitude
-	if distance < 8 then
-    		if prompt.HoldDuration > 0 then
-        		fireproximityprompt(prompt, prompt.HoldDuration)
-    		else
-       		 	fireproximityprompt(prompt)
-    		end
-
-    		PurchasedPets[uuid] = true
-
-    		print(string.format("Bought %s (UUID: %s) for %s (already nearby)", petType, uuid, priceLabel.Text))
-        else
-            -- Start walking to it
-            print(string.format("Walking to %s (UUID: %s) - distance: %.1f", petType, uuid, distance))
-            humanoid:MoveTo(refPart.Position + Vector3.new(0, 3, 0))
-            currentTarget = {
-                refPart = refPart,
-                prompt = prompt,
-                petType = petType,
-                uuid = uuid,
-            }
-        end
-
-        -- Only target one pet at a time
-        break
-    end
+local function getCharacter()
+    return LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
 end
+
+local function getTool(toolName)
+    local character = getCharacter()
+    local tool = character:FindFirstChild(toolName)
+    if tool then return tool end
+    -- Check backpack
+    local backpack = LocalPlayer.Backpack
+    return backpack:FindFirstChild(toolName)
+end
+
+-- ==========================================
+-- AUTO BUY PETS (no map loading wait)
+-- ==========================================
+local function startAutoBuy()
+    task.spawn(function()
+        local WildPetSpawns, WildPetRef
+
+        -- Aggressively find the folders without waiting for full map load
+        local function findFolders()
+            local map = workspace:FindFirstChild("Map")
+            if map then
+                WildPetSpawns = map:FindFirstChild("WildPetSpawns")
+                WildPetRef = map:FindFirstChild("WildPetRef")
+            end
+            -- Try alternate paths
+            if not WildPetSpawns then
+                for _, v in ipairs(workspace:GetDescendants()) do
+                    if v.Name == "WildPetSpawns" and v:IsA("Folder") then
+                        WildPetSpawns = v
+                    end
+                    if v.Name == "WildPetRef" and v:IsA("Folder") then
+                        WildPetRef = v
+                    end
+                    if WildPetSpawns and WildPetRef then break end
+                end
+            end
+        end
+
+        findFolders()
+
+        local PurchasedPets = {}
+        local currentTarget = nil
+
+        while task.wait(0.5) do
+            -- Keep trying to find folders if not found yet
+            if not WildPetSpawns or not WildPetRef then
+                findFolders()
+                if not WildPetSpawns or not WildPetRef then
+                    continue
+                end
+            end
+
+            local character = getCharacter()
+            local hrp = character and character:FindFirstChild("HumanoidRootPart")
+            local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+
+            if not hrp or not humanoid then
+                currentTarget = nil
+                continue
+            end
+
+            -- If we have a current target, check if we're close enough to buy
+            if currentTarget then
+                local distance = (hrp.Position - currentTarget.refPart.Position).Magnitude
+
+                if distance < 8 then
+                    if currentTarget.prompt.HoldDuration > 0 then
+                        fireproximityprompt(currentTarget.prompt, currentTarget.prompt.HoldDuration)
+                    else
+                        fireproximityprompt(currentTarget.prompt)
+                    end
+                    PurchasedPets[currentTarget.uuid] = tick()
+                    print(string.format("[AutoBuy] Bought %s (UUID: %s)", currentTarget.petType, currentTarget.uuid))
+                    currentTarget = nil
+                    humanoid:MoveTo(hrp.Position)
+                else
+                    humanoid:MoveTo(currentTarget.refPart.Position + Vector3.new(0, 3, 0))
+                end
+                continue
+            end
+
+            -- Scan for a new pet to buy
+            for _, model in ipairs(WildPetSpawns:GetChildren()) do
+                local petType = model.Name:match("WildPet_(.-)_WildPet_")
+                if not petType or not WantedPets[petType] then
+                    continue
+                end
+
+                local uuid = model.Name:match("WildPet_.-_WildPet_(.+)$")
+                if not uuid then
+                    continue
+                end
+
+                if PurchasedPets[uuid] then
+                    continue
+                end
+
+                local refPart = WildPetRef:FindFirstChild("WildPet_" .. uuid)
+                if not refPart then
+                    continue
+                end
+
+                local priceLabel = model.RootPart and model.RootPart:FindFirstChild("PetCostTimer") and model.RootPart.PetCostTimer:FindFirstChild("TextLabel")
+                if not priceLabel then
+                    continue
+                end
+
+                local currentPrice = parsePrice(priceLabel.Text)
+                if currentPrice > MaxPrice[petType] then
+                    continue
+                end
+
+                local prompt = model:FindFirstChild("BuyPrompt", true)
+                if not prompt then
+                    continue
+                end
+
+                local distance = (hrp.Position - refPart.Position).Magnitude
+                if distance < 8 then
+                    if prompt.HoldDuration > 0 then
+                        fireproximityprompt(prompt, prompt.HoldDuration)
+                    else
+                        fireproximityprompt(prompt)
+                    end
+                    PurchasedPets[uuid] = tick()
+                    print(string.format("[AutoBuy] Bought %s (UUID: %s) for %s (already nearby)", petType, uuid, priceLabel.Text))
+                else
+                    print(string.format("[AutoBuy] Walking to %s (UUID: %s) - distance: %.1f", petType, uuid, distance))
+                    humanoid:MoveTo(refPart.Position + Vector3.new(0, 3, 0))
+                    currentTarget = {
+                        refPart = refPart,
+                        prompt = prompt,
+                        petType = petType,
+                        uuid = uuid,
+                    }
+                end
+                break
+            end
+        end
+    end)
+end
+
+-- ==========================================
+-- AUTO ATTACK with Shovel
+-- ==========================================
+local function startShovelAttack()
+    task.spawn(function()
+        while task.wait(0.3) do
+            local tool = getTool("Shovel")
+            if not tool then
+                -- Try to equip from backpack
+                local backpackTool = LocalPlayer.Backpack:FindFirstChild("Shovel")
+                if backpackTool then
+                    backpackTool.Parent = getCharacter()
+                end
+                continue
+            end
+
+            -- Find nearest player
+            local closestPlayer, closestDist = nil, math.huge
+            for _, player in ipairs(Players:GetPlayers()) do
+                if player == LocalPlayer then continue end
+                local char = player.Character
+                local targetHrp = char and char:FindFirstChild("HumanoidRootPart")
+                if not targetHrp then continue end
+
+                local dist = (getCharacter().HumanoidRootPart.Position - targetHrp.Position).Magnitude
+                if dist < closestDist then
+                    closestDist = dist
+                    closestPlayer = player
+                end
+            end
+
+            if closestPlayer and closestDist < 30 then
+                -- Face the target
+                local hrp = getCharacter().HumanoidRootPart
+                local targetHrp = closestPlayer.Character.HumanoidRootPart
+                hrp.CFrame = CFrame.lookAt(hrp.Position, Vector3.new(targetHrp.Position.X, hrp.Position.Y, targetHrp.Position.Z))
+
+                -- Activate the tool
+                tool:Activate()
+                print(string.format("[Shovel] Attacking %s (dist: %.1f)", closestPlayer.Name, closestDist))
+            end
+        end
+    end)
+end
+
+-- ==========================================
+-- AUTO ATTACK with Strawberry Gun
+-- ==========================================
+local function startStrawberryGunAttack()
+    task.spawn(function()
+        while task.wait(0.2) do
+            local tool = getTool("StrawberryGun") or getTool("Strawberry Gun") or getTool("Strawberry")
+            if not tool then
+                local backpackTool = LocalPlayer.Backpack:FindFirstChild("StrawberryGun") or LocalPlayer.Backpack:FindFirstChild("Strawberry Gun") or LocalPlayer.Backpack:FindFirstChild("Strawberry")
+                if backpackTool then
+                    backpackTool.Parent = getCharacter()
+                end
+                continue
+            end
+
+            -- Find nearest player
+            local closestPlayer, closestDist = nil, math.huge
+            for _, player in ipairs(Players:GetPlayers()) do
+                if player == LocalPlayer then continue end
+                local char = player.Character
+                local targetHrp = char and char:FindFirstChild("HumanoidRootPart")
+                if not targetHrp then continue end
+
+                local dist = (getCharacter().HumanoidRootPart.Position - targetHrp.Position).Magnitude
+                if dist < closestDist then
+                    closestDist = dist
+                    closestPlayer = player
+                end
+            end
+
+            if closestPlayer and closestDist < 50 then
+                -- Face the target
+                local hrp = getCharacter().HumanoidRootPart
+                local targetHrp = closestPlayer.Character.HumanoidRootPart
+                hrp.CFrame = CFrame.lookAt(hrp.Position, Vector3.new(targetHrp.Position.X, hrp.Position.Y, targetHrp.Position.Z))
+
+                -- Activate the tool
+                tool:Activate()
+                print(string.format("[StrawberryGun] Attacking %s (dist: %.1f)", closestPlayer.Name, closestDist))
+            end
+        end
+    end)
+end
+
+-- ==========================================
+-- START ALL FEATURES
+-- ==========================================
+print("[+] Starting Auto Buy Pets...")
+startAutoBuy()
+
+print("[+] Starting Shovel Auto Attack...")
+startShovelAttack()
+
+print("[+] Starting Strawberry Gun Auto Attack...")
+startStrawberryGunAttack()
